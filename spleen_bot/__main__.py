@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from spleen_bot.bot import Settings, SweeperBot
+from spleen_bot.bot import SweeperBot, load_settings
 from spleen_bot.solver import FLAG as SOLVER_FLAG
 from spleen_bot.solver import HIDDEN as SOLVER_HIDDEN
 from spleen_bot.solver import solve
@@ -144,6 +144,12 @@ def self_test(root: Path) -> int:
     assert sorted(two_left.flags) == [(0, 0), (3, 0)], two_left
     assert (2, 0) in two_left.safe_cells, two_left
 
+    from spleen_bot.bot import load_settings
+
+    loaded = load_settings(root / "config.ini")
+    assert loaded.click_delay >= 0.05, loaded
+    assert loaded.settle_timeout >= loaded.click_delay, loaded
+
     opening = [[SOLVER_HIDDEN] * 9 for _ in range(9)]
     first = solve_grid(opening, 10)
     assert not first.has_progress, first
@@ -251,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true", help="Cek screenshot referensi, tanpa klik")
     parser.add_argument("--preview", type=Path, help="Baca satu screenshot dan cetak rencananya")
     parser.add_argument("--monitor", type=int, default=1, help="Nomor monitor mss (1 = utama)")
-    parser.add_argument("--click-delay", type=float, default=0.008, help="Jeda antar klik, detik")
+    parser.add_argument("--config", type=Path, help="File jeda, bawaan config.ini di folder proyek")
+    parser.add_argument("--click-delay", type=float, default=None, help="Timpa jeda antar klik dari config, detik")
     parser.add_argument("--echo-mode", choices=("hover", "cast"), default="hover")
     parser.add_argument("--no-chord", action="store_true", help="Jangan klik angka; klik tiap petak aman")
     args = parser.parse_args(argv)
@@ -260,11 +267,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.preview:
         return preview(args.preview)
     if args.play:
-        settings = Settings(
-            monitor=args.monitor,
-            click_delay=args.click_delay,
-            echo_mode=args.echo_mode,
-        )
+        config_path = args.config or (root / "config.ini")
+        try:
+            settings = load_settings(
+                config_path,
+                monitor=args.monitor,
+                echo_mode=args.echo_mode,
+                click_delay=args.click_delay,
+            )
+        except ValueError as exc:
+            print(exc)
+            return 1
         bot = SweeperBot(settings)
         bot.chord_enabled = not args.no_chord
         try:

@@ -1,8 +1,10 @@
 """Play loop: read the board, click the forced tiles, Echo Slash when stuck."""
 from __future__ import annotations
 
+import configparser
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import mss
 import numpy as np
@@ -19,10 +21,64 @@ STAGE_MINES = {1: 10, 2: 19, 4: 47}
 @dataclass
 class Settings:
     monitor: int = 1
-    click_delay: float = 0.008
+    click_delay: float = 0.07
+    flag_pause: float = 0.12
+    settle_timeout: float = 0.60
+    echo_settle: float = 0.85
+    echo_aim: float = 0.08
+    echo_cast_pause: float = 0.12
+    park_pause: float = 0.04
+    continue_pause: float = 0.50
+    start_delay: float = 3.0
     echo_mode: str = "hover"  # hover = key 1 on the tile; cast = key 1 then left click
     mana_reserve: int = 18
-    settle_timeout: float = 0.32
+    config_path: Path | None = None
+
+
+# Nama di config.ini -> field Settings. Nilainya detik.
+_DELAY_FIELDS = {
+    "klik": "click_delay",
+    "setelah_bendera": "flag_pause",
+    "tunggu_papan": "settle_timeout",
+    "tunggu_skill": "echo_settle",
+    "bidik_skill": "echo_aim",
+    "skill_lalu_klik": "echo_cast_pause",
+    "singkirkan_kursor": "park_pause",
+    "setelah_continue": "continue_pause",
+    "mulai": "start_delay",
+}
+
+
+def _seconds(text: str) -> float:
+    return float(text.strip().replace(",", "."))
+
+
+def load_settings(
+    path: Path,
+    *,
+    monitor: int = 1,
+    echo_mode: str = "hover",
+    click_delay: float | None = None,
+) -> Settings:
+    """Read action delays from config.ini. Missing keys keep the built-in values."""
+    settings = Settings(monitor=monitor, echo_mode=echo_mode, config_path=path)
+    if path.is_file():
+        parser = configparser.ConfigParser()
+        parser.read(path, encoding="utf-8")
+        section = parser["jeda"] if parser.has_section("jeda") else {}
+        for key, field in _DELAY_FIELDS.items():
+            if key not in section:
+                continue
+            try:
+                value = _seconds(section[key])
+            except ValueError:
+                raise ValueError(f"{path.name}: jeda '{key}' harus angka detik, dapat {section[key]!r}.") from None
+            if value < 0:
+                raise ValueError(f"{path.name}: jeda '{key}' tidak boleh negatif.")
+            setattr(settings, field, value)
+    if click_delay is not None:
+        settings.click_delay = click_delay
+    return settings
 
 
 class SweeperBot:
@@ -86,10 +142,10 @@ class SweeperBot:
     def echo(self, board: Board, col: int, row: int) -> None:
         x, y = self.screen_point(*board.center(col, row))
         win.move(x, y)
-        time.sleep(0.03)
+        time.sleep(self.settings.echo_aim)
         win.tap(win.VK_1)
         if self.settings.echo_mode == "cast":
-            time.sleep(0.05)
+            time.sleep(self.settings.echo_cast_pause)
             win.click("left")
         self.echoes += 1
 
@@ -137,7 +193,7 @@ class SweeperBot:
                     self.stopped = True
                     return "abort"
                 self.clicks += len(flag_points)
-                time.sleep(0.04)
+                time.sleep(self.settings.flag_pause)
             if plan.chords:
                 chord_points = [self.screen_point(*board.center(c, r)) for c, r in plan.chords]
                 if not win.burst(chord_points, "left", self.settings.click_delay):
@@ -180,9 +236,15 @@ class SweeperBot:
         return "guess"
 
     def play(self) -> None:
+        pace = self.settings
         print("Spleen Sweeper bot. Fokuskan jendela Dota (borderless 1920x1080).")
-        print("Mulai dalam 3 detik. Esc atau F8 untuk berhenti.")
-        time.sleep(3)
+        source = pace.config_path.name if pace.config_path and pace.config_path.is_file() else "bawaan"
+        print(
+            f"Jeda dari {source}: klik {pace.click_delay:.3f}s, setelah bendera {pace.flag_pause:.3f}s, "
+            f"tunggu papan {pace.settle_timeout:.2f}s, tunggu skill {pace.echo_settle:.2f}s."
+        )
+        print(f"Mulai dalam {pace.start_delay:g} detik. Esc atau F8 untuk berhenti.")
+        time.sleep(pace.start_delay)
         misses = 0
         last_stage = 0
         stalled: tuple | None = None
@@ -196,7 +258,7 @@ class SweeperBot:
                 print("Stage selesai, klik CONTINUE.")
                 if not win.burst([self.screen_point(*button)], "left", 0):
                     break
-                time.sleep(0.35)
+                time.sleep(self.settings.continue_pause)
                 stalled = None
                 continue
 
@@ -219,7 +281,7 @@ class SweeperBot:
                 stall_count = 0
 
             self.park(board)
-            time.sleep(0.015)
+            time.sleep(self.settings.park_pause)
             frame, board = self.capture_board()
             if board is None:
                 continue
@@ -236,7 +298,7 @@ class SweeperBot:
                 time.sleep(0.2)
                 continue
 
-            timeout = 0.6 if action == "echo" else self.settings.settle_timeout
+            timeout = self.settings.echo_settle if action == "echo" else self.settings.settle_timeout
             _frame, updated = self.wait_stable(signature, timeout)
             new_sig = None if updated is None else updated.signature()
             if new_sig == signature:
