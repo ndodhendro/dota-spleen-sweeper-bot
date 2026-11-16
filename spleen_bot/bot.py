@@ -217,6 +217,15 @@ class SweeperBot:
             self.clicks += len(points)
             return "click"
 
+        if _untouched(board) and plan.guess is not None:
+            col, row = plan.guess
+            print(f"  klik kiri pembuka di ({col},{row})")
+            if not win.burst([self.screen_point(*board.center(col, row))], "left", 0):
+                self.stopped = True
+                return "abort"
+            self.clicks += 1
+            return "click"
+
         target = echo_pickup or plan.guess
         if target is None:
             return "done"
@@ -318,6 +327,11 @@ class SweeperBot:
             stalled = new_sig
 
         print(f"Selesai. Klik {self.clicks}, Echo Slash {self.echoes}.")
+
+
+def _untouched(board: Board) -> bool:
+    """A stage that just started has no revealed tiles, so the first click is blind."""
+    return all(value == HIDDEN for row in board.cells for value in row)
 
 
 def _opened_by(board: Board, plan: Plan) -> set[tuple[int, int]]:

@@ -15,11 +15,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from spleen_bot.bot import SweeperBot, load_settings
+from spleen_bot.bot import SweeperBot, _untouched, load_settings
 from spleen_bot.solver import FLAG as SOLVER_FLAG
 from spleen_bot.solver import HIDDEN as SOLVER_HIDDEN
 from spleen_bot.solver import solve
-from spleen_bot.vision import FLAG, HIDDEN, find_continue, read_board, read_mine_counter
+from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, read_board, read_mine_counter
 
 
 def _load(path: Path) -> np.ndarray:
@@ -154,6 +154,10 @@ def self_test(root: Path) -> int:
     first = solve_grid(opening, 10)
     assert not first.has_progress, first
     assert first.guess == (4, 4), first
+    fresh = Board(9, 9, 0, 0, 36, opening)
+    assert _untouched(fresh)
+    fresh.cells[4][4] = 0
+    assert not _untouched(fresh)
 
     temp = root / "docs" / "temp"
     expected = {
@@ -209,7 +213,7 @@ def self_test(root: Path) -> int:
             print(f"  FAIL rencana merusak angka {before} -> {after}")
             failed = True
         if name == "stage1.png" and (moves.has_progress or moves.guess != (4, 4)):
-            print(f"  FAIL stage 1 harus skill di tengah, dapat {moves}")
+            print(f"  FAIL stage 1 harus klik pembuka di tengah, dapat {moves}")
             failed = True
         if name in {"stage3.png", "stage5.png"}:
             print(_render(board))
