@@ -144,6 +144,27 @@ def self_test(root: Path) -> int:
     assert sorted(two_left.flags) == [(0, 0), (3, 0)], two_left
     assert (2, 0) in two_left.safe_cells, two_left
 
+    # Right edge: the 3 under two flags has one hidden neighbor, so that cell
+    # is a mine. Chording the 2 beside it in the same turn would open the mine
+    # before the new flag exists. Direct clicks cover the safe tiles instead.
+    edge = [
+        [0, 2, SOLVER_HIDDEN],
+        [0, 3, SOLVER_HIDDEN],
+        [0, 3, SOLVER_HIDDEN],
+        [0, 2, SOLVER_HIDDEN],
+        [0, 1, SOLVER_HIDDEN],
+    ]
+    edge_plan = solve_grid(edge)
+    assert (2, 3) in edge_plan.flags, edge_plan
+    for col, row in edge_plan.chords:
+        assert (2, 3) not in {
+            (col + dx, row + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+        }, edge_plan
+    edge[3][2] = SOLVER_FLAG
+    flagged_edge = solve_grid(edge)
+    assert (2, 3) not in flagged_edge.flags
+    assert any(cell in flagged_edge.chords for cell in ((1, 3), (1, 4))), flagged_edge
+
     from spleen_bot.bot import load_settings
 
     loaded = load_settings(root / "config.ini")

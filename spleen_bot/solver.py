@@ -428,6 +428,7 @@ def solve(grid: list[list[int]], mines_left: int | None = None) -> Plan:
     already_flagged = {(x, y) for y in range(rows) for x in range(cols) if grid[y][x] == FLAG}
     plan = Plan()
     plan.flags = sorted(mines - already_flagged)
+    new_flags = set(plan.flags)
 
     safe_hidden = sorted(cell for cell in safe if grid[cell[1]][cell[0]] == HIDDEN)
     covered: set[tuple[int, int]] = set()
@@ -438,7 +439,12 @@ def solve(grid: list[list[int]], mines_left: int | None = None) -> Plan:
             if number <= 0:
                 continue
             neigh = _neighbors(cols, rows, x, y)
-            flagged = sum(1 for cell in neigh if cell in mines or cell in already_flagged)
+            # Chording opens every neighbor the game has not flagged yet. A mine
+            # decided in this plan is still a plain hidden tile until that
+            # right-click is accepted, so the chord would detonate it.
+            if any(cell in new_flags for cell in neigh):
+                continue
+            flagged = sum(1 for cell in neigh if cell in already_flagged)
             opening = {cell for cell in neigh if cell in safe and grid[cell[1]][cell[0]] == HIDDEN}
             if flagged == number and opening:
                 chord_candidates.append(((x, y), opening))
