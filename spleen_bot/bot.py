@@ -11,7 +11,17 @@ import numpy as np
 
 from spleen_bot import input as win
 from spleen_bot.solver import Plan, solve
-from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, read_board, read_mana, read_mine_counter
+from spleen_bot.vision import (
+    FLAG,
+    HIDDEN,
+    Board,
+    find_continue,
+    find_play,
+    find_play_again,
+    read_board,
+    read_mana,
+    read_mine_counter,
+)
 
 # Fresh-stage mine totals from the reference screenshots. Only used as a hint
 # in the log; the solver does not trust them for clicks because a run can differ.
@@ -150,20 +160,71 @@ class SweeperBot:
         self.echoes += 1
 
     def act(self, board: Board, plan: Plan, frame: np.ndarray, mines_left: int | None = None) -> str:
+        clocks = _clocks(board)
+        echo_clock: tuple[int, int] | None = None
+        full_plan = plan
+        if clocks:
+            focused, echo_clock = _focus_clock(board, plan, clocks)
+            if focused.has_progress:
+                plan = focused
+                echo_clock = None
+                print(f"  utamakan daerah jam {clocks}")
+            else:
+                plan = Plan()
+
+        acted = self._perform_certain(board, plan)
+        if acted is not None:
+            return acted
+
+        if echo_clock is not None:
+            mana = read_mana(frame, board)
+            col, row = echo_clock
+            if mana >= self.settings.mana_reserve:
+                left = f" sisa~{mines_left}" if mines_left is not None else ""
+                print(f"  skill 1 di jam ({col},{row}) mana~{mana}{left}")
+                self.echo(board, col, row)
+                return "echo"
+            print(f"  jam di ({col},{row}) belum pasti dan mana kurang. Tidak diklik.")
+            if full_plan is not plan:
+                acted = self._perform_certain(board, full_plan)
+                if acted is not None:
+                    return acted
+
+        if _untouched(board) and full_plan.guess is not None:
+            col, row = full_plan.guess
+            print(f"  klik kiri pembuka di ({col},{row})")
+            if not win.burst([self.screen_point(*board.center(col, row))], "left", 0):
+                self.stopped = True
+                return "abort"
+            self.clicks += 1
+            return "click"
+
+        if full_plan.guess is None:
+            return "done"
+        mana = read_mana(frame, board)
+        col, row = full_plan.guess
+        if mana >= self.settings.mana_reserve:
+            left = f" sisa~{mines_left}" if mines_left is not None else ""
+            print(f"  skill 1 di ({col},{row}) karena buntu, mana~{mana}{left}")
+            self.echo(board, col, row)
+            return "echo"
+        print(f"  tidak ada langkah 100% di ({col},{row}). Tebakan tidak diklik.")
+        return "stuck"
+
+    def _perform_certain(self, board: Board, plan: Plan) -> str | None:
+        """Click only cells the solver proved. Returns None when there is nothing certain."""
         pickup_clicks: list[tuple[int, int]] = []
         pickup_flags: list[tuple[int, int]] = []
-        echo_pickup: tuple[int, int] | None = None
-        safe = {(c, r) for c, r in plan.clicks}
+        safe = set(plan.clicks)
+        safe.update(plan.safe_cells)
         safe.update(_opened_by(board, plan))
-        mine_cells = {(c, r) for c, r in plan.flags}
-        for col, row, kind in board.pickups:
+        mine_cells = set(plan.flags)
+        for col, row, _kind in board.pickups:
             value = board.cells[row][col]
             if value == HIDDEN and (col, row) in safe:
                 pickup_clicks.append(board.center(col, row))
             elif value == FLAG or (col, row) in mine_cells:
                 pickup_flags.append(board.center(col, row))
-            elif kind == "clock" and value == HIDDEN:
-                echo_pickup = (col, row)
 
         points = [self.screen_point(*point) for point in pickup_clicks]
         if points:
@@ -173,8 +234,6 @@ class SweeperBot:
                 return "abort"
             self.clicks += len(points)
 
-        # Flags are only worth the click when a number-chord needs them.
-        # A pickup sitting on a mine is nudged with one right click.
         if self.chord_enabled and (plan.flags or plan.chords):
             if plan.flags or pickup_flags:
                 seen: set[tuple[int, int]] = set()
@@ -201,48 +260,22 @@ class SweeperBot:
                     return "abort"
                 self.clicks += len(chord_points)
             if plan.clicks:
-                points = [self.screen_point(*board.center(c, r)) for c, r in plan.clicks]
-                if not win.burst(points, "left", self.settings.click_delay):
+                click_points = [self.screen_point(*board.center(c, r)) for c, r in plan.clicks]
+                if not win.burst(click_points, "left", self.settings.click_delay):
                     self.stopped = True
                     return "abort"
-                self.clicks += len(points)
+                self.clicks += len(click_points)
             return "chord" if plan.chords else "click"
 
         direct = plan.safe_cells or plan.clicks
         if direct:
-            points = [self.screen_point(*board.center(c, r)) for c, r in direct]
-            if not win.burst(points, "left", self.settings.click_delay):
+            click_points = [self.screen_point(*board.center(c, r)) for c, r in direct]
+            if not win.burst(click_points, "left", self.settings.click_delay):
                 self.stopped = True
                 return "abort"
-            self.clicks += len(points)
+            self.clicks += len(click_points)
             return "click"
-
-        if _untouched(board) and plan.guess is not None:
-            col, row = plan.guess
-            print(f"  klik kiri pembuka di ({col},{row})")
-            if not win.burst([self.screen_point(*board.center(col, row))], "left", 0):
-                self.stopped = True
-                return "abort"
-            self.clicks += 1
-            return "click"
-
-        target = echo_pickup or plan.guess
-        if target is None:
-            return "done"
-        mana = read_mana(frame, board)
-        col, row = target
-        if mana >= self.settings.mana_reserve:
-            why = "jam" if echo_pickup else "buntu"
-            left = f" sisa~{mines_left}" if mines_left is not None else ""
-            print(f"  skill 1 di ({col},{row}) risiko {plan.guess_risk:.0%} mana~{mana}{left} ({why})")
-            self.echo(board, col, row)
-            return "echo"
-        print(f"  mana habis (~{mana}), tebak biasa di ({col},{row}) risiko {plan.guess_risk:.0%}")
-        if not win.burst([self.screen_point(*board.center(col, row))], "left", 0):
-            self.stopped = True
-            return "abort"
-        self.clicks += 1
-        return "guess"
+        return None
 
     def play(self) -> None:
         pace = self.settings
@@ -262,6 +295,26 @@ class SweeperBot:
             if self._abort():
                 break
             frame = self.grab()
+            again = find_play_again(frame)
+            if again is not None:
+                print("Kalah. Klik PLAY AGAIN, mulai lagi dari stage 1.")
+                if not win.burst([self.screen_point(*again)], "left", 0):
+                    break
+                time.sleep(self.settings.continue_pause)
+                last_stage = 0
+                stall_count = 0
+                stalled = None
+                continue
+            menu = find_play(frame)
+            if menu is not None:
+                print("Menu Spleen Sweeper. Klik PLAY, mulai stage 1.")
+                if not win.burst([self.screen_point(*menu)], "left", 0):
+                    break
+                time.sleep(self.settings.continue_pause)
+                last_stage = 0
+                stall_count = 0
+                stalled = None
+                continue
             button = find_continue(frame)
             if button is not None:
                 print("Stage selesai, klik CONTINUE.")
@@ -306,6 +359,9 @@ class SweeperBot:
                 print("Tidak ada petak tersisa. Menunggu stage won...")
                 time.sleep(0.2)
                 continue
+            if action == "stuck":
+                time.sleep(self.settings.settle_timeout)
+                continue
 
             timeout = self.settings.echo_settle if action == "echo" else self.settings.settle_timeout
             _frame, updated = self.wait_stable(signature, timeout)
@@ -327,6 +383,55 @@ class SweeperBot:
             stalled = new_sig
 
         print(f"Selesai. Klik {self.clicks}, Echo Slash {self.echoes}.")
+
+
+def _clocks(board: Board) -> list[tuple[int, int]]:
+    return [
+        (col, row)
+        for col, row, kind in board.pickups
+        if kind == "clock" and board.cells[row][col] == HIDDEN
+    ]
+
+
+def _focus_clock(board: Board, plan: Plan, clocks: list[tuple[int, int]]) -> tuple[Plan, tuple[int, int] | None]:
+    """Keep only proven moves next to a clock. Otherwise echo that clock.
+
+    A clock that is itself a proven mine is not flagged: flagging would skip
+    the pickup. Echo Slash removes the mine without a guess.
+    """
+    clock_set = set(clocks)
+
+    def nearest(cell: tuple[int, int]) -> int:
+        return min(max(abs(cell[0] - col), abs(cell[1] - row)) for col, row in clocks)
+
+    def near(cell: tuple[int, int]) -> bool:
+        return nearest(cell) <= 2
+
+    safe_near = [cell for cell in plan.safe_cells if near(cell)]
+    safe_set = set(safe_near)
+    flags = [cell for cell in plan.flags if near(cell) and cell not in clock_set]
+    chords: list[tuple[int, int]] = []
+    covered: set[tuple[int, int]] = set()
+    for col, row in plan.chords:
+        opened: list[tuple[int, int]] = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == dy == 0:
+                    continue
+                nx, ny = col + dx, row + dy
+                if 0 <= nx < board.cols and 0 <= ny < board.rows and board.cells[ny][nx] == HIDDEN:
+                    opened.append((nx, ny))
+        if near((col, row)) or any(near(cell) for cell in opened):
+            chords.append((col, row))
+            covered.update(cell for cell in opened if cell in safe_set)
+    clicks = [cell for cell in safe_near if cell not in covered]
+    clicks.sort(key=nearest)
+    flags.sort(key=nearest)
+    chords.sort(key=nearest)
+    focused = Plan(flags=flags, chords=chords, clicks=clicks, safe_cells=safe_near)
+    if focused.has_progress:
+        return focused, None
+    return Plan(), clocks[0]
 
 
 def _untouched(board: Board) -> bool:

@@ -251,8 +251,8 @@ def read_board(rgb: np.ndarray) -> Board | None:
     return Board(cols, rows, origin_x, origin_y, pitch, cells, pickups)
 
 
-def find_continue(rgb: np.ndarray) -> tuple[int, int] | None:
-    """Center of the Stage Won CONTINUE button, if that overlay is up."""
+def _find_overlay_button(rgb: np.ndarray) -> tuple[int, int] | None:
+    """Center of the blue Stage Won / You Lost button, if that overlay is up."""
     height, width = rgb.shape[:2]
     y0, y1 = int(height * 0.46), int(height * 0.68)
     x0, x1 = int(width * 0.36), int(width * 0.64)
@@ -279,6 +279,64 @@ def find_continue(rgb: np.ndarray) -> tuple[int, int] | None:
     if int(white.sum()) < 25:
         return None
     return x0 + (left + right) // 2, y0 + (top + bottom) // 2
+
+
+def find_continue(rgb: np.ndarray) -> tuple[int, int] | None:
+    """Center of CONTINUE after a stage clear. PLAY AGAIN sits lower and is ignored."""
+    button = _find_overlay_button(rgb)
+    if button is None or button[1] > rgb.shape[0] * 0.59:
+        return None
+    return button
+
+
+def find_play_again(rgb: np.ndarray) -> tuple[int, int] | None:
+    """Center of PLAY AGAIN on the You Lost screen. That restarts at stage 1."""
+    button = _find_overlay_button(rgb)
+    if button is None or button[1] <= rgb.shape[0] * 0.59:
+        return None
+    return button
+
+
+def find_play(rgb: np.ndarray) -> tuple[int, int] | None:
+    """Center of the menu PLAY button. LEAVE is the button to its right."""
+    height, width = rgb.shape[:2]
+    y0, y1 = int(height * 0.74), int(height * 0.84)
+    x0, x1 = int(width * 0.38), int(width * 0.62)
+    sub = rgb[y0:y1, x0:x1]
+    red = sub[:, :, 0].astype(np.int16)
+    green = sub[:, :, 1].astype(np.int16)
+    blue = sub[:, :, 2].astype(np.int16)
+    fill = (red < 50) & (green > 60) & (green < 140) & (blue > 140) & (blue < 200) & (blue > red + 80) & (blue > green + 40)
+    columns = fill.sum(axis=0) > 8
+    runs: list[tuple[int, int]] = []
+    start = None
+    for index, on in enumerate(columns):
+        if on and start is None:
+            start = index
+        elif not on and start is not None:
+            if index - start > 50:
+                runs.append((start, index))
+            start = None
+    if start is not None and len(columns) - start > 50:
+        runs.append((start, len(columns)))
+    buttons: list[tuple[int, int]] = []
+    for run_start, run_end in runs:
+        glyph = fill[:, run_start:run_end]
+        ys = np.nonzero(glyph.any(axis=1))[0]
+        if len(ys) == 0 or not (24 <= int(ys.max() - ys.min()) <= 60):
+            continue
+        patch = sub[int(ys.min()) : int(ys.max()) + 1, run_start:run_end]
+        white = (patch[:, :, 0] > 200) & (patch[:, :, 1] > 200) & (patch[:, :, 2] > 190)
+        if int(white.sum()) < 40:
+            continue
+        buttons.append((x0 + (run_start + run_end) // 2, y0 + (int(ys.min()) + int(ys.max())) // 2))
+    if len(buttons) < 2:
+        return None
+    buttons.sort()
+    play, leave = buttons[0], buttons[1]
+    if leave[0] - play[0] > 250:
+        return None
+    return play
 
 
 # HUD digits above the board, normalized to 15x10 from the reference shots.

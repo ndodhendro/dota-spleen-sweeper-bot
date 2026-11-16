@@ -15,11 +15,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from spleen_bot.bot import SweeperBot, _untouched, load_settings
+from spleen_bot.bot import SweeperBot, _focus_clock, _untouched, load_settings
 from spleen_bot.solver import FLAG as SOLVER_FLAG
 from spleen_bot.solver import HIDDEN as SOLVER_HIDDEN
-from spleen_bot.solver import solve
-from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, read_board, read_mine_counter
+from spleen_bot.solver import Plan, solve
+from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, find_play, find_play_again, read_board, read_mine_counter
 
 
 def _load(path: Path) -> np.ndarray:
@@ -159,6 +159,23 @@ def self_test(root: Path) -> int:
     fresh.cells[4][4] = 0
     assert not _untouched(fresh)
 
+    # Proven moves stay inside the clock's neighborhood. An unproven clock is
+    # not left-clicked; only Echo Slash may open it.
+    clock_plan = Plan(safe_cells=[(1, 0)], clicks=[(1, 0)])
+    clock_cells = [[SOLVER_HIDDEN] * 6 for _ in range(2)]
+    on_clock = Board(6, 2, 0, 0, 36, clock_cells, pickups=[(1, 0, "clock")])
+    focused, echo_at = _focus_clock(on_clock, clock_plan, [(1, 0)])
+    assert (1, 0) in focused.safe_cells, focused
+    assert echo_at is None
+    far_clock = Board(6, 2, 0, 0, 36, clock_cells, pickups=[(5, 1, "clock")])
+    far_focus, far_echo = _focus_clock(far_clock, clock_plan, [(5, 1)])
+    assert not far_focus.has_progress, far_focus
+    assert far_echo == (5, 1)
+    mine_clock = Board(1, 2, 0, 0, 36, [[1], [SOLVER_HIDDEN]], pickups=[(0, 1, "clock")])
+    mine_focus, mine_echo = _focus_clock(mine_clock, Plan(flags=[(0, 1)]), [(0, 1)])
+    assert (0, 1) not in mine_focus.flags
+    assert mine_echo == (0, 1)
+
     temp = root / "docs" / "temp"
     expected = {
         "stage1.png": (9, 9),
@@ -227,9 +244,33 @@ def self_test(root: Path) -> int:
     if button is None:
         print("  FAIL tombol CONTINUE tidak ketemu")
         failed = True
+    if find_play_again(won) is not None:
+        print("  FAIL stage won terbaca sebagai PLAY AGAIN")
+        failed = True
+    lost = _load(temp / "lost.png")
+    again = find_play_again(lost)
+    print(f"lost play again={again}")
+    if again is None:
+        print("  FAIL tombol PLAY AGAIN tidak ketemu")
+        failed = True
+    if find_continue(lost) is not None:
+        print("  FAIL layar kalah terbaca sebagai CONTINUE")
+        failed = True
+    menu = _load(temp / "play.png")
+    play = find_play(menu)
+    print(f"menu play={play}")
+    if play is None or play[0] > 960:
+        print("  FAIL tombol PLAY tidak ketemu, atau yang terklik adalah LEAVE")
+        failed = True
+    if find_continue(menu) is not None or find_play_again(menu) is not None:
+        print("  FAIL menu terbaca sebagai CONTINUE atau PLAY AGAIN")
+        failed = True
     plain = _load(temp / "stage1.png")
-    if find_continue(plain) is not None:
-        print("  FAIL stage 1 terbaca sebagai CONTINUE")
+    if find_continue(plain) is not None or find_play_again(plain) is not None or find_play(plain) is not None:
+        print("  FAIL stage 1 terbaca sebagai tombol overlay")
+        failed = True
+    if find_play(won) is not None or find_play(lost) is not None:
+        print("  FAIL layar selesai atau kalah terbaca sebagai menu PLAY")
         failed = True
     if failed:
         print("SELF-TEST GAGAL")
