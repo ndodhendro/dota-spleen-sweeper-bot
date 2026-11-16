@@ -281,6 +281,284 @@ def find_continue(rgb: np.ndarray) -> tuple[int, int] | None:
     return x0 + (left + right) // 2, y0 + (top + bottom) // 2
 
 
+# HUD digits above the board, normalized to 15x10 from the reference shots.
+# 5 and 6 are drawn in the same stroke; a weak match is rejected rather than guessed.
+_COUNTER_ROWS: dict[int, list[str]] = {
+    0: [
+        "...#####..",
+        "..#....##.",
+        ".##.....#.",
+        ".#......##",
+        ".#......##",
+        "##.......#",
+        "##.......#",
+        "##.......#",
+        "##.......#",
+        "##......##",
+        ".#......##",
+        ".#......#.",
+        ".##.....#.",
+        "..##...#..",
+        "...####...",
+    ],
+    1: [
+        "......####",
+        "##########",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+        ".........#",
+    ],
+    2: [
+        "#######...",
+        "##....##..",
+        ".......##.",
+        ".......##.",
+        "........#.",
+        ".......##.",
+        ".......#..",
+        "......##..",
+        "......#...",
+        ".....#....",
+        "....##....",
+        "...##.....",
+        "..##......",
+        "###.......",
+        "##########",
+    ],
+    3: [
+        "########..",
+        ".......##.",
+        "........##",
+        "........##",
+        "........#.",
+        "........#.",
+        "......#...",
+        "...####...",
+        ".......##.",
+        "........##",
+        ".........#",
+        "........##",
+        "........##",
+        ".......##.",
+        "########..",
+    ],
+    4: [
+        ".......#..",
+        "......##..",
+        ".....###..",
+        ".....#.#..",
+        "....#..#..",
+        "...#...#..",
+        "..#....#..",
+        "..#....#..",
+        ".#.....#..",
+        "##########",
+        "......###.",
+        ".......#..",
+        ".......#..",
+        ".......#..",
+        ".......#..",
+    ],
+    5: [
+        "##########",
+        "##........",
+        "##........",
+        "##........",
+        "########..",
+        ".......##.",
+        "........##",
+        "........#.",
+        "........#.",
+        "........##",
+        ".......##.",
+        "......##..",
+        ".....##...",
+        "...###....",
+        "..##......",
+    ],
+    6: [
+        "..##......",
+        "....#.....",
+        ".....#....",
+        "......#...",
+        "......##..",
+        ".......##.",
+        "...######.",
+        ".###...##.",
+        ".#......##",
+        "##......##",
+        "##.......#",
+        "##.......#",
+        "##......##",
+        ".##....##.",
+        "..##..##..",
+    ],
+    7: [
+        "##########",
+        "........##",
+        "........#.",
+        ".......##.",
+        ".......#..",
+        "......##..",
+        "......#...",
+        ".....##...",
+        ".....#....",
+        ".....#....",
+        "....##....",
+        "....#.....",
+        "...##.....",
+        "...#......",
+        "..##......",
+    ],
+    8: [
+        "...#####..",
+        ".##....##.",
+        ".#......#.",
+        ".#......#.",
+        ".##.....#.",
+        "..#....##.",
+        "...####...",
+        "...####...",
+        "..#....##.",
+        ".#......##",
+        "##......##",
+        "##......##",
+        ".#......##",
+        ".##....##.",
+        "...#####..",
+    ],
+    9: [
+        "..##..##..",
+        ".##....##.",
+        "##......##",
+        "##.......#",
+        "##.......#",
+        "##......##",
+        ".#......##",
+        ".###...##.",
+        "...######.",
+        ".......##.",
+        "......##..",
+        "......#...",
+        ".....#....",
+        "....#.....",
+        "..##......",
+    ],
+}
+_COUNTER_TEMPLATES: dict[int, np.ndarray] = {}
+
+
+def _counter_templates() -> dict[int, np.ndarray]:
+    if _COUNTER_TEMPLATES:
+        return _COUNTER_TEMPLATES
+    for digit, rows in _COUNTER_ROWS.items():
+        _COUNTER_TEMPLATES[digit] = np.array([[ch == "#" for ch in row] for row in rows], dtype=bool)
+    return _COUNTER_TEMPLATES
+
+
+def _glyph_jaccard(a: np.ndarray, b: np.ndarray) -> float:
+    union = np.logical_or(a, b).sum()
+    if union == 0:
+        return 0.0
+    return float(np.logical_and(a, b).sum() / union)
+
+
+def _normalize_counter(glyph: np.ndarray) -> np.ndarray:
+    height, width = glyph.shape
+    src_y = np.linspace(0, height - 1, 15).astype(int)
+    src_x = np.linspace(0, width - 1, 10).astype(int)
+    return glyph[src_y][:, src_x]
+
+
+def _classify_counter_digit(glyph: np.ndarray) -> int | None:
+    sample = _normalize_counter(glyph)
+    scored = [(_glyph_jaccard(sample, template), digit) for digit, template in _counter_templates().items()]
+    scored.sort(reverse=True)
+    best, second = scored[0], scored[1]
+    if best[0] < 0.70 or best[0] - second[0] < 0.12:
+        return None
+    return best[1]
+
+
+def read_mine_counter(rgb: np.ndarray, board: Board) -> int | None:
+    """Remaining mines shown at the right of the HUD above the board.
+
+    The value falls as the game accepts a flag. None when the digits are
+    missing or not confident, and the solver then stays on local logic.
+    """
+    height, width = rgb.shape[:2]
+    scale = board.pitch / float(PITCH_HINT)
+    top = int(round(board.origin_y - 80 * scale))
+    bottom = int(round(board.origin_y - 36 * scale))
+    right = board.origin_x + board.cols * board.pitch
+    left = int(round(right - 56 * scale))
+    top = max(0, top)
+    left = max(0, left)
+    bottom = min(height, bottom)
+    right_edge = min(width, right + 6)
+    if bottom <= top or right_edge <= left:
+        return None
+    crop = rgb[top:bottom, left:right_edge]
+    red = crop[:, :, 0].astype(np.int16)
+    green = crop[:, :, 1].astype(np.int16)
+    blue = crop[:, :, 2].astype(np.int16)
+    white = (red > 210) & (green > 210) & (blue > 200) & (np.abs(red - blue) < 40)
+    columns = white.any(axis=0)
+    runs: list[tuple[int, int]] = []
+    start = None
+    for index, on in enumerate(columns):
+        if on and start is None:
+            start = index
+        elif not on and start is not None:
+            if index - start >= 3:
+                runs.append((start, index))
+            start = None
+    if start is not None and len(columns) - start >= 3:
+        runs.append((start, len(columns)))
+    if not runs:
+        return None
+
+    gap_limit = max(6, int(round(8 * scale)))
+    cluster = [runs[-1]]
+    for run in reversed(runs[:-1]):
+        if cluster[0][0] - run[1] > gap_limit:
+            break
+        cluster.insert(0, run)
+
+    digits: list[int] = []
+    min_height = max(8, int(round(10 * scale)))
+    max_height = int(round(22 * scale))
+    for run_start, run_end in cluster:
+        glyph = white[:, run_start:run_end]
+        ys, xs = np.nonzero(glyph)
+        if len(xs) == 0:
+            return None
+        glyph = glyph[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
+        glyph_h, glyph_w = glyph.shape
+        if not (min_height <= glyph_h <= max_height and 3 <= glyph_w <= int(round(16 * scale))):
+            return None
+        digit = _classify_counter_digit(glyph)
+        if digit is None:
+            return None
+        digits.append(digit)
+    if not digits or len(digits) > 3:
+        return None
+    value = int("".join(str(digit) for digit in digits))
+    if value > board.cols * board.rows:
+        return None
+    return value
+
+
 def read_mana(rgb: np.ndarray, board: Board) -> int:
     """Approximate mana 0-250 from the blue bar under the board.
 

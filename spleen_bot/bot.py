@@ -9,7 +9,7 @@ import numpy as np
 
 from spleen_bot import input as win
 from spleen_bot.solver import Plan, solve
-from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, read_board, read_mana
+from spleen_bot.vision import FLAG, HIDDEN, Board, find_continue, read_board, read_mana, read_mine_counter
 
 # Fresh-stage mine totals from the reference screenshots. Only used as a hint
 # in the log; the solver does not trust them for clicks because a run can differ.
@@ -93,7 +93,7 @@ class SweeperBot:
             win.click("left")
         self.echoes += 1
 
-    def act(self, board: Board, plan: Plan, frame: np.ndarray) -> str:
+    def act(self, board: Board, plan: Plan, frame: np.ndarray, mines_left: int | None = None) -> str:
         pickup_clicks: list[tuple[int, int]] = []
         pickup_flags: list[tuple[int, int]] = []
         echo_pickup: tuple[int, int] | None = None
@@ -168,7 +168,8 @@ class SweeperBot:
         col, row = target
         if mana >= self.settings.mana_reserve:
             why = "jam" if echo_pickup else "buntu"
-            print(f"  skill 1 di ({col},{row}) risiko {plan.guess_risk:.0%} mana~{mana} ({why})")
+            left = f" sisa~{mines_left}" if mines_left is not None else ""
+            print(f"  skill 1 di ({col},{row}) risiko {plan.guess_risk:.0%} mana~{mana}{left} ({why})")
             self.echo(board, col, row)
             return "echo"
         print(f"  mana habis (~{mana}), tebak biasa di ({col},{row}) risiko {plan.guess_risk:.0%}")
@@ -223,9 +224,10 @@ class SweeperBot:
             if board is None:
                 continue
 
-            plan = solve(board.cells)
+            mines_left = read_mine_counter(frame, board)
+            plan = solve(board.cells, mines_left)
             signature = board.signature()
-            action = self.act(board, plan, frame)
+            action = self.act(board, plan, frame, mines_left)
             self.park(board)
             if action == "abort":
                 break
